@@ -4,15 +4,22 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot};
 
+#[allow(unused)]
 enum SessionMessage {
     Start,
     Stop,
     Healthy(oneshot::Sender<bool>),
     Stdout(oneshot::Sender<Vec<String>>),
     Stderr(oneshot::Sender<Vec<String>>),
-    UpdateDetails{ target: String, env: String, host_port: usize, dest_port: usize}
+    UpdateDetails {
+        target: String,
+        env: String,
+        host_port: usize,
+        dest_port: usize,
+    },
 }
 
+#[allow(unused)]
 enum SessionStatus {
     Fresh,
     Running(Child, BufReader<ChildStdout>, BufReader<ChildStderr>),
@@ -27,7 +34,7 @@ struct SessionActor {
     dest_port: usize,
     stdout: Vec<String>,
     stderr: Vec<String>,
-    env: String
+    env: String,
 }
 
 impl SessionActor {
@@ -112,8 +119,13 @@ impl SessionActor {
             }
             SessionMessage::Stderr(reply) => {
                 reply.send(self.stderr.clone()).unwrap();
-            },
-            SessionMessage::UpdateDetails { target, env, host_port, dest_port } => {
+            }
+            SessionMessage::UpdateDetails {
+                target,
+                env,
+                host_port,
+                dest_port,
+            } => {
                 self.terminate();
                 self.target = target;
                 self.env = env;
@@ -130,7 +142,7 @@ async fn run(mut actor: SessionActor) {
         // using an enum, but now this has become a right proper clusterfuck. This is necessary to lift out the futures
         // stuck inside the enum, we basically make one that instantly closes if it's not ready.
         let (child_fut, mut stdout_lines, mut stderr_lines) = match &mut actor.status {
-            SessionStatus::Running (child, stdout, stderr ) => (
+            SessionStatus::Running(child, stdout, stderr) => (
                 Either::Left(async move { child.wait().await }),
                 Some(stdout.lines()),
                 Some(stderr.lines()),
@@ -224,7 +236,12 @@ impl Session {
     }
 
     pub async fn update(&self, target: String, env: String, host_port: usize, dest_port: usize) {
-        let msg = SessionMessage::UpdateDetails{target, env, host_port, dest_port};
+        let msg = SessionMessage::UpdateDetails {
+            target,
+            env,
+            host_port,
+            dest_port,
+        };
         self.sender.send(msg).await.expect("Actor ded?");
     }
 }

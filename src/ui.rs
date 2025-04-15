@@ -1,21 +1,21 @@
-use std::{borrow::Cow, future::Future, path::PathBuf, time::Duration};
-
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyEvent, KeyEventKind, KeyCode};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind};
 use futures::{FutureExt, StreamExt};
 use ratatui::{
-    buffer::Buffer,
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Style, Stylize},
-    widgets::{Block, BorderType, Borders, Cell, ListState, Paragraph, Row, StatefulWidget, Table, TableState, Widget},
-    DefaultTerminal, Frame
+    widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table, TableState},
+    DefaultTerminal, Frame,
 };
+use std::{borrow::Cow, path::PathBuf, time::Duration};
 
 use crate::{servers::Server, ssm::Session, Uhh};
 
 pub async fn run(server_list: Vec<Uhh>, connections_file: PathBuf) -> Result<()> {
     let terminal = ratatui::init();
-    App::new(server_list, connections_file).run(terminal).await?;
+    App::new(server_list, connections_file)
+        .run(terminal)
+        .await?;
     ratatui::restore();
 
     Ok(())
@@ -106,7 +106,7 @@ impl EditView {
             .border_type(BorderType::Rounded);
         f.render_widget(form_block, chunks[0]);
 
-        let form_fields = vec![
+        let form_fields = [
             ("Instance ID", &self.form_fields[0]),
             ("Name", &self.form_fields[1]),
             ("Environment", &self.form_fields[2]),
@@ -114,16 +114,20 @@ impl EditView {
             ("Destination Port", &self.form_fields[4]),
         ];
 
-        let form_items: Vec<Paragraph> = form_fields.iter().enumerate().map(|(i, (label, value))| {
-            let style = if i == self.active_field {
-                Style::default().bg(Color::DarkGray)
-            } else {
-                Style::default()
-            };
-            Paragraph::new(format!("{}: {}", label, value))
-                .style(style)
-                .block(Block::bordered())
-        }).collect();
+        let form_items: Vec<Paragraph> = form_fields
+            .iter()
+            .enumerate()
+            .map(|(i, (label, value))| {
+                let style = if i == self.active_field {
+                    Style::default().bg(Color::DarkGray)
+                } else {
+                    Style::default()
+                };
+                Paragraph::new(format!("{}: {}", label, value))
+                    .style(style)
+                    .block(Block::bordered())
+            })
+            .collect();
 
         let form_layout = Layout::default()
             .direction(Direction::Vertical)
@@ -145,31 +149,24 @@ impl EditView {
         self.scroll = self.scroll.min(self.stdout.len().saturating_sub(1));
 
         let visible_lines = chunks[1].height.saturating_sub(2) as usize;
-        let start_idx = self.stdout.len().saturating_sub(self.scroll + visible_lines);
+        let start_idx = self
+            .stdout
+            .len()
+            .saturating_sub(self.scroll + visible_lines);
         let end_idx = start_idx + visible_lines;
         let visible_text = self.stdout[start_idx..end_idx.min(self.stdout.len())].join("\n");
 
         let stdout_para = Paragraph::new(visible_text)
-            .block(Block::default().title(format!(
-                "{} lines",
-                self.stdout.len()
-            )));
+            .block(Block::default().title(format!("{} lines", self.stdout.len())));
         f.render_widget(stdout_para, chunks[1].inner(Margin::new(1, 1)));
     }
 }
-
-#[derive(Debug)]
-struct MainTable<'a> {
-    servers: &'a Vec<Server>,
-}
-
 
 pub struct App {
     mode: Mode,
     server_list: Vec<Uhh>,
     table_state: TableState,
     running: bool,
-    editing: Option<Server>,
     event_stream: EventStream,
     connections_file: PathBuf,
 }
@@ -182,8 +179,7 @@ impl App {
             table_state: TableState::default(),
             event_stream: EventStream::default(),
             running: false,
-            editing: None,
-            connections_file
+            connections_file,
         };
         res.table_state.select_first();
 
@@ -212,23 +208,26 @@ impl App {
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded);
 
-                let rows = self.server_list.iter().map( |s| {
+                let rows = self.server_list.iter().map(|s| {
                     Row::new(vec![
                         Cell::from(Cow::Borrowed(s.1.name.as_str())),
                         Cell::from(Cow::Borrowed(s.1.identifier.as_str())),
                         Cell::from(Cow::Borrowed(s.1.env.as_str())),
-                        Cell::from(if s.2 { "Running" } else { "Stopped" })
+                        Cell::from(if s.2 { "Running" } else { "Stopped" }),
                     ])
                 });
 
                 let table = Table::new(rows, vec![30, 30, 20, 10])
                     .block(block)
-                    .header(Row::new(vec![
-                        Cell::from("Nickname"),
-                        Cell::from("Identifier"),
-                        Cell::from("Environment"),
-                        Cell::from("Status")
-                    ]).style(Style::new().bold().bg(Color::LightRed)))
+                    .header(
+                        Row::new(vec![
+                            Cell::from("Nickname"),
+                            Cell::from("Identifier"),
+                            Cell::from("Environment"),
+                            Cell::from("Status"),
+                        ])
+                        .style(Style::new().bold().bg(Color::LightRed)),
+                    )
                     .highlight_symbol(" 👉 ")
                     .row_highlight_style(Style::new().light_green());
 
@@ -239,17 +238,23 @@ impl App {
             }
             Mode::Edit(edit_view) => {
                 edit_view.draw(f, cunks[0]);
-                let help = Paragraph::new("esc to cancel, return to save.").style(Style::new().bg(Color::Blue));
+                let help = Paragraph::new("esc to cancel, return to save.")
+                    .style(Style::new().bg(Color::Blue));
                 f.render_widget(help, cunks[1]);
             }
         }
     }
 
     async fn poll_sessions(&mut self) {
-        let futs: Vec<_> = self.server_list.iter().enumerate().map(|(i, (session, server, status))| {
-            let f = session.healthy();
-            async move { (i, f.await) }
-        }).collect();
+        let futs: Vec<_> = self
+            .server_list
+            .iter()
+            .enumerate()
+            .map(|(i, (session, server, status))| {
+                let f = session.healthy();
+                async move { (i, f.await) }
+            })
+            .collect();
         let res: Vec<(usize, bool)> = futures::future::join_all(futs).await;
         for (i, status) in res {
             self.server_list[i].2 = status;
@@ -298,7 +303,7 @@ impl App {
                         edit_view.update().await;
                         self.mode = Mode::Edit(edit_view);
                     }
-                },
+                }
                 KeyCode::Char(' ') => {
                     if let Some(selected) = self.table_state.selected() {
                         let handle = self.server_list[selected].0.clone();
@@ -313,7 +318,11 @@ impl App {
                     }
                 }
                 KeyCode::Char('s') => {
-                    let servers: Vec<_> = self.server_list.iter().map(|(_, server, _)| server.clone()).collect();
+                    let servers: Vec<_> = self
+                        .server_list
+                        .iter()
+                        .map(|(_, server, _)| server.clone())
+                        .collect();
                     let path = self.connections_file.clone();
                     tokio::spawn(async move {
                         if let Err(e) = crate::servers::save(path, &servers).await {
@@ -322,10 +331,21 @@ impl App {
                     });
                 }
                 KeyCode::Char('a') => {
-                    let server = Server { name: "A cool new server".into(), identifier: "i-something".into(), env: "a-profile".into(), host_port: 6969, dest_port: 1337 };
-                    let session = Session::new(server.identifier.clone(), server.env.clone(), server.host_port, server.dest_port);
+                    let server = Server {
+                        name: "A cool new server".into(),
+                        identifier: "i-something".into(),
+                        env: "a-profile".into(),
+                        host_port: 6969,
+                        dest_port: 1337,
+                    };
+                    let session = Session::new(
+                        server.identifier.clone(),
+                        server.env.clone(),
+                        server.host_port,
+                        server.dest_port,
+                    );
                     self.server_list.push((session, server, false));
-                },
+                }
                 KeyCode::Backspace | KeyCode::Char('d') => {
                     if let Some(sel) = self.table_state.selected() {
                         self.server_list.remove(sel);
@@ -337,14 +357,19 @@ impl App {
                 if !edit_view.handle_key(key) {
                     match key.code {
                         KeyCode::Enter => {
-                            if let Mode::Edit(edit_view) = std::mem::replace(&mut self.mode, Mode::Main) {
-                                let (session, server, _) = &mut self.server_list[edit_view.selected];
+                            if let Mode::Edit(edit_view) =
+                                std::mem::replace(&mut self.mode, Mode::Main)
+                            {
+                                let (session, server, _) =
+                                    &mut self.server_list[edit_view.selected];
                                 // Update the server with form field values
                                 server.identifier = edit_view.form_fields[0].clone();
                                 server.name = edit_view.form_fields[1].clone();
                                 server.env = edit_view.form_fields[2].clone();
-                                server.host_port = edit_view.form_fields[3].parse().unwrap_or(server.host_port);
-                                server.dest_port = edit_view.form_fields[4].parse().unwrap_or(server.dest_port);
+                                server.host_port =
+                                    edit_view.form_fields[3].parse().unwrap_or(server.host_port);
+                                server.dest_port =
+                                    edit_view.form_fields[4].parse().unwrap_or(server.dest_port);
 
                                 let session = session.clone();
                                 let identifer = server.identifier.clone();
