@@ -4,12 +4,13 @@ use anyhow::Result;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Server {
+    #[serde(rename = "instanceId")]
     pub identifier: String,
     pub env: String,
-    #[serde(rename = "localPort")]
+    #[serde(rename = "sourcePort")]
     pub host_port: usize,
-    pub nickname: String,
-    #[serde(rename = "remotePort")]
+    pub name: String,
+    #[serde(rename = "destPort")]
     pub dest_port: usize,
 }
 

@@ -1,4 +1,4 @@
-use std::{borrow::Cow, time::Duration};
+use std::{borrow::Cow, future::Future, time::Duration};
 
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyEvent, KeyEventKind, KeyCode};
@@ -79,26 +79,27 @@ impl App {
 
                 let rows = self.server_list.iter().map( |s| {
                     Row::new(vec![
-                        Cell::from(Cow::Borrowed(s.1.nickname.as_str())),
+                        Cell::from(Cow::Borrowed(s.1.name.as_str())),
                         Cell::from(Cow::Borrowed(s.1.identifier.as_str())),
                         Cell::from(Cow::Borrowed(s.1.env.as_str())),
                         Cell::from(if s.2 { "Running" } else { "Stopped" })
                     ])
                 });
 
-                let table = Table::new(rows, vec![30, 30, 20])
+                let table = Table::new(rows, vec![30, 30, 20, 10])
                     .block(block)
                     .header(Row::new(vec![
                         Cell::from("Nickname"),
                         Cell::from("Identifier"),
                         Cell::from("Environment"),
-                    ]))
+                        Cell::from("Status")
+                    ]).style(Style::new().bold().bg(Color::LightRed)))
                     .highlight_symbol(" 👉 ")
-                    .row_highlight_style(Style::new().cyan());
+                    .row_highlight_style(Style::new().light_green());
 
                 f.render_stateful_widget(table, cunks[0], &mut self.table_state);
 
-                let help = Paragraph::new("up/down to move, e to edit, d to delete, s to save, space to start/stop");
+                let help = Paragraph::new("up/down to move, e to edit, d to delete, s to save, space to start/stop").style(Style::new().bg(Color::Blue));
                 f.render_widget(help, cunks[1]);
             }
             Mode::Edit { selected } => {
@@ -107,7 +108,21 @@ impl App {
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded);
                 f.render_widget(block, cunks[0]);
+
+                let help = Paragraph::new("up/down to move, esc to cancel, return to save.").style(Style::new().bg(Color::Blue));
+                f.render_widget(help, cunks[1]);
             }
+        }
+    }
+
+    async fn poll_sessions(&mut self) {
+        let futs: Vec<_> = self.server_list.iter().enumerate().map(|(i, (session, server, status))| {
+            let f = session.healthy();
+            async move { (i, f.await) }
+        }).collect();
+        let res: Vec<(usize, bool)> = futures::future::join_all(futs).await;
+        for (i, status) in res {
+            self.server_list[i].2 = status;
         }
     }
 
@@ -131,7 +146,7 @@ impl App {
                 }
             }
             _ = interval.tick() => {
-
+                self.poll_sessions().await;
             }
         }
         Ok(())
@@ -143,15 +158,31 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('q') => self.running = false,
                 KeyCode::Up | KeyCode::Char('k') => self.table_state.select_previous(),
                 KeyCode::Down | KeyCode::Char('j') => self.table_state.select_next(),
+                KeyCode::Char('e') => {
+                    if let Some(sel) = self.table_state.selected() {
+                        self.mode = Mode::Edit { selected: sel }
+                    }
+                },
                 KeyCode::Char(' ') => {
                     if let Some(selected) = self.table_state.selected() {
-                        self.server_list[selected].0.start().await;
+                        let handle = self.server_list[selected].0.clone();
+                        let running = self.server_list[selected].2;
+                        tokio::spawn(async move {
+                            if running {
+                                handle.stop().await;
+                            } else {
+                                handle.start().await;
+                            }
+                        });
                     }
                 }
                 _ => {}
             },
             Mode::Edit { selected } => match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Main,
+                KeyCode::Enter => {
+                    self.mode = Mode::Main;
+                },
+                KeyCode::Esc  => self.mode = Mode::Main,
                 _ => {}
             },
         }

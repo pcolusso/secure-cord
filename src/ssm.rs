@@ -26,12 +26,14 @@ struct SessionActor {
     dest_port: usize,
     stdout: Vec<String>,
     stderr: Vec<String>,
+    env: String
 }
 
 impl SessionActor {
     fn new(
         reciever: mpsc::Receiver<SessionMessage>,
         target: String,
+        env: String,
         host_port: usize,
         dest_port: usize,
     ) -> Self {
@@ -41,6 +43,7 @@ impl SessionActor {
             target,
             host_port,
             dest_port,
+            env,
             stdout: vec![],
             stderr: vec![],
         }
@@ -79,6 +82,7 @@ impl SessionActor {
                         self.dest_port, self.host_port
                     ),
                 ]);
+                command.env("AWS_PROFILE", &self.env);
                 command.stdout(std::process::Stdio::piped());
                 command.stderr(std::process::Stdio::piped());
                 let res = command.spawn();
@@ -166,9 +170,9 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(target: String, host_port: usize, dest_port: usize) -> Self {
+    pub fn new(target: String, env: String, host_port: usize, dest_port: usize) -> Self {
         let (sender, receiver) = mpsc::channel(8);
-        let actor = SessionActor::new(receiver, target, host_port, dest_port);
+        let actor = SessionActor::new(receiver, target, env, host_port, dest_port);
         tokio::spawn(run(actor));
 
         Self { sender }
