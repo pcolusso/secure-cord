@@ -1,8 +1,6 @@
-use std::collections::HashMap;
-
 use anyhow::Result;
-use aws_sdk_ssm as ssm;
 use clap::Parser;
+use ssm::Session;
 
 mod ssm;
 
@@ -18,13 +16,13 @@ struct Config {
 #[tokio::main]
 async fn main() -> Result<()> {
     let Config { instance_id, host_port, dest_port } = Config::parse();
-    let parameters = HashMap::from([
-        ("portNumber".into(), vec![dest_port.to_string()]),
-        ("localPortNumber".into(), vec![host_port.to_string()])
-    ]);
+    let sess = Session::new(instance_id, host_port, dest_port);
+    sess.start().await;
 
-    let config = aws_config::load_from_env().await;
-    let client = ssm::Client::new(&config);
-
-    Ok(())
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        eprintln!("{}", sess.healthy().await);
+        eprintln!("{:?}", sess.stdout().await);
+        eprintln!("{:?}", sess.stderr().await);
+    }
 }
