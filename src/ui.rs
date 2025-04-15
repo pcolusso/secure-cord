@@ -234,7 +234,7 @@ impl App {
 
                 f.render_stateful_widget(table, cunks[0], &mut self.table_state);
 
-                let help = Paragraph::new("up/down to move, e to edit, d to delete, s to save, space to start/stop").style(Style::new().bg(Color::Blue));
+                let help = Paragraph::new("up/down to move, e to edit, d to delete, s to save, a to add, space to start/stop").style(Style::new().bg(Color::Blue));
                 f.render_widget(help, cunks[1]);
             }
             Mode::Edit(edit_view) => {
@@ -320,6 +320,16 @@ impl App {
                             eprintln!("Failed to save servers: {}", e);
                         }
                     });
+                }
+                KeyCode::Char('a') => {
+                    let server = Server { name: "A cool new server".into(), identifier: "i-something".into(), env: "a-profile".into(), host_port: 6969, dest_port: 1337 };
+                    let session = Session::new(server.identifier.clone(), server.env.clone(), server.host_port, server.dest_port);
+                    self.server_list.push((session, server, false));
+                },
+                KeyCode::Backspace | KeyCode::Char('d') => {
+                    if let Some(sel) = self.table_state.selected() {
+                        self.server_list.remove(sel);
+                    }
                 }
                 _ => {}
             },
