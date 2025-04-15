@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::path::Path;
 use anyhow::Result;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Server {
     pub identifier: String,
     pub env: String,

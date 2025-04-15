@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use servers::Server;
 use ssm::Session;
 use std::path::PathBuf;
 
@@ -14,13 +15,18 @@ struct Config {
     connections_file: PathBuf
 }
 
+type Uhh = (Session, Server, bool);
+
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let Config { connections_file } = Config::parse();
     let servers = servers::load(connections_file).await?;
+    let mapped: Vec<Uhh> = servers
+        .into_iter()
+        .map(|s| (Session::new(s.identifier.clone(), s.host_port.clone(), s.dest_port.clone()), s, false)).collect();
 
-    ui::run(servers).await?;
+    ui::run(mapped).await?;
 
     Ok(())
 }

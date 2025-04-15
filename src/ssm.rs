@@ -141,7 +141,6 @@ async fn run(mut actor: SessionActor) {
                 }
             } => {
                 if let Ok(Some(line)) = line {
-                    eprintln!("stdout: {}", line);
                     actor.stdout.push(line);
                 }
             }
@@ -154,7 +153,6 @@ async fn run(mut actor: SessionActor) {
                 }
             } => {
                 if let Ok(Some(line)) = line {
-                    eprintln!("stderr: {}", line);
                     actor.stderr.push(line);
                 }
             }
