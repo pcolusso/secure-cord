@@ -1,7 +1,7 @@
 use futures::future::Either;
 use std::process::ExitStatus;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot};
 
 enum SessionMessage {
@@ -14,7 +14,7 @@ enum SessionMessage {
 
 enum SessionStatus {
     Fresh,
-    Running(Child),
+    Running(Child, BufReader<ChildStdout>, BufReader<ChildStderr>),
     Stopped(Result<ExitStatus, std::io::Error>),
 }
 
@@ -50,7 +50,7 @@ impl SessionActor {
         match msg {
             SessionMessage::Stop => {
                 match std::mem::replace(&mut self.status, SessionStatus::Fresh) {
-                    SessionStatus::Running(mut child) => {
+                    SessionStatus::Running(mut child, _, _) => {
                         tokio::spawn(async move {
                             if let Err(e) = child.kill().await {
                                 // TODO: HAndle?
@@ -83,8 +83,10 @@ impl SessionActor {
                 command.stderr(std::process::Stdio::piped());
                 let res = command.spawn();
                 match res {
-                    Ok(child) => {
-                        self.status = SessionStatus::Running(child);
+                    Ok(mut child) => {
+                        let stdout = BufReader::new(child.stdout.take().unwrap());
+                        let stderr = BufReader::new(child.stderr.take().unwrap());
+                        self.status = SessionStatus::Running(child, stdout, stderr);
                     }
                     Err(err) => {
                         self.status = SessionStatus::Stopped(Err(err));
@@ -94,7 +96,7 @@ impl SessionActor {
             SessionMessage::Healthy(reply) => {
                 let res = match &self.status {
                     SessionStatus::Fresh | SessionStatus::Stopped(_) => false,
-                    SessionStatus::Running(child) => true,
+                    SessionStatus::Running(child, _, _) => true,
                 };
                 reply.send(res).unwrap();
             }
@@ -110,19 +112,17 @@ impl SessionActor {
 
 async fn run(mut actor: SessionActor) {
     loop {
-        let mut child_stdout = None;
-        let mut child_stderr = None;
-
-        let child_fut = if let SessionStatus::Running(child) = &mut actor.status {
-            child_stdout = child.stdout.take().map(BufReader::new);
-            child_stderr = child.stderr.take().map(BufReader::new);
-            Either::Left(async move { child.wait().await })
-        } else {
-            Either::Right(futures::future::pending())
+        // So, I've really created a mess here. I thought I was being smart by making unrepresentable states impossible,
+        // using an enum, but now this has become a right proper clusterfuck. This is necessary to lift out the futures
+        // stuck inside the enum, we basically make one that instantly closes if it's not ready.
+        let (child_fut, mut stdout_lines, mut stderr_lines) = match &mut actor.status {
+            SessionStatus::Running (child, stdout, stderr ) => (
+                Either::Left(async move { child.wait().await }),
+                Some(stdout.lines()),
+                Some(stderr.lines()),
+            ),
+            _ => (Either::Right(futures::future::pending()), None, None),
         };
-
-        let mut stdout_lines = child_stdout.map(|r| r.lines());
-        let mut stderr_lines = child_stderr.map(|r| r.lines());
 
         tokio::select! {
             Some(msg) = actor.reciever.recv() => {

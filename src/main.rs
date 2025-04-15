@@ -1,28 +1,26 @@
 use anyhow::Result;
 use clap::Parser;
 use ssm::Session;
+use std::path::PathBuf;
 
 mod ssm;
+mod ui;
+mod servers;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Config {
-    instance_id: String,
-    host_port: usize,
-    dest_port: usize
+    #[arg(short, long, default_value = "/Users/paulcolusso/Documents/connections.json")]
+    connections_file: PathBuf
 }
 
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let Config { instance_id, host_port, dest_port } = Config::parse();
-    let sess = Session::new(instance_id, host_port, dest_port);
-    sess.start().await;
+    let Config { connections_file } = Config::parse();
+    let servers = servers::load(connections_file).await?;
 
-    loop {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        eprintln!("{}", sess.healthy().await);
-        eprintln!("{:?}", sess.stdout().await);
-        eprintln!("{:?}", sess.stderr().await);
-    }
+    ui::run(servers).await?;
+
+    Ok(())
 }
