@@ -4,7 +4,11 @@ use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyEvent, KeyEventKind, KeyCode};
 use futures::{FutureExt, StreamExt};
 use ratatui::{
-    buffer::Buffer, layout::{Alignment, Constraint, Direction, Layout, Rect}, style::{Color, Style, Stylize}, widgets::{Block, BorderType, Borders, Cell, ListState, Paragraph, Row, StatefulWidget, Table, TableState, Widget}, DefaultTerminal, Frame
+    buffer::Buffer,
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
+    style::{Color, Style, Stylize},
+    widgets::{Block, BorderType, Borders, Cell, ListState, Paragraph, Row, StatefulWidget, Table, TableState, Widget},
+    DefaultTerminal, Frame
 };
 
 use crate::{servers::Server, ssm::Session, Uhh};
@@ -17,10 +21,66 @@ pub async fn run(server_list: Vec<Uhh>) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug)]
 enum Mode {
     Main,
-    Edit { selected: usize },
+    Edit(EditView),
+}
+
+struct EditView {
+    selected: usize,
+    stdout: Vec<String>,
+    scroll: usize,
+    last_update: std::time::Instant,
+    session: Session,
+}
+
+impl EditView {
+    fn new(selected: usize, session: Session) -> Self {
+        Self {
+            selected,
+            stdout: Vec::new(),
+            scroll: 0,
+            last_update: std::time::Instant::now(),
+            session,
+        }
+    }
+
+    async fn update_stdout(&mut self) {
+        if self.last_update.elapsed() > std::time::Duration::from_secs(1) {
+            self.stdout = self.session.stdout().await;
+            self.last_update = std::time::Instant::now();
+        }
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            _ => false,
+        }
+    }
+
+    fn draw(&mut self, f: &mut Frame, area: Rect) {
+        let block = Block::default()
+            .title("Editing")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded);
+        f.render_widget(block, area);
+
+        // Limit scroll to reasonable bounds
+        self.scroll = self.scroll.min(self.stdout.len().saturating_sub(1));
+
+        let visible_lines = area.height.saturating_sub(2) as usize;
+        let start_idx = self.stdout.len().saturating_sub(self.scroll + visible_lines);
+        let end_idx = start_idx + visible_lines;
+        let visible_text = self.stdout[start_idx..end_idx.min(self.stdout.len())].join("\n");
+
+        let stdout_para = Paragraph::new(visible_text)
+            .block(Block::default().title(format!(
+                "SSM Output ({} lines)",
+                self.stdout.len()
+            )).borders(Borders::ALL)
+            .border_type(BorderType::Rounded));
+        f.render_widget(stdout_para, area.inner(Margin::new(1, 1)));
+    }
 }
 
 #[derive(Debug)]
@@ -57,7 +117,7 @@ impl App {
         self.running = true;
         while self.running {
             terminal.draw(|f| self.draw(f))?;
-            self.handle_crossterm_events().await?;
+            self.handle_events().await?;
         }
         Ok(())
     }
@@ -70,7 +130,7 @@ impl App {
             .constraints([Constraint::Fill(1), Constraint::Length(1)].as_ref())
             .split(f.area());
 
-        match self.mode {
+        match &mut self.mode {
             Mode::Main => {
                 let block = Block::default()
                     .title("Servers")
@@ -102,14 +162,9 @@ impl App {
                 let help = Paragraph::new("up/down to move, e to edit, d to delete, s to save, space to start/stop").style(Style::new().bg(Color::Blue));
                 f.render_widget(help, cunks[1]);
             }
-            Mode::Edit { selected } => {
-                let block = Block::default()
-                    .title("Editing")
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded);
-                f.render_widget(block, cunks[0]);
-
-                let help = Paragraph::new("up/down to move, esc to cancel, return to save.").style(Style::new().bg(Color::Blue));
+            Mode::Edit(edit_view) => {
+                edit_view.draw(f, cunks[0]);
+                let help = Paragraph::new("esc to cancel, return to save.").style(Style::new().bg(Color::Blue));
                 f.render_widget(help, cunks[1]);
             }
         }
@@ -126,7 +181,7 @@ impl App {
         }
     }
 
-    async fn handle_crossterm_events(&mut self) -> Result<()> {
+    async fn handle_events(&mut self) -> Result<()> {
         let mut interval = tokio::time::interval(Duration::from_millis(100));
 
         tokio::select! {
@@ -146,6 +201,9 @@ impl App {
                 }
             }
             _ = interval.tick() => {
+                if let Mode::Edit(edit_view) = &mut self.mode {
+                    edit_view.update_stdout().await;
+                }
                 self.poll_sessions().await;
             }
         }
@@ -160,7 +218,10 @@ impl App {
                 KeyCode::Down | KeyCode::Char('j') => self.table_state.select_next(),
                 KeyCode::Char('e') => {
                     if let Some(sel) = self.table_state.selected() {
-                        self.mode = Mode::Edit { selected: sel }
+                        let (session, _, _) = &self.server_list[sel];
+                        let mut edit_view = EditView::new(sel, session.clone());
+                        edit_view.update_stdout().await;
+                        self.mode = Mode::Edit(edit_view);
                     }
                 },
                 KeyCode::Char(' ') => {
@@ -178,13 +239,16 @@ impl App {
                 }
                 _ => {}
             },
-            Mode::Edit { selected } => match key.code {
-                KeyCode::Enter => {
-                    self.mode = Mode::Main;
-                },
-                KeyCode::Esc  => self.mode = Mode::Main,
-                _ => {}
-            },
+            Mode::Edit(edit_view) => {
+                if !edit_view.handle_key(key) {
+                    match key.code {
+                        KeyCode::Enter | KeyCode::Esc => {
+                            self.mode = Mode::Main;
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
     }
 }
