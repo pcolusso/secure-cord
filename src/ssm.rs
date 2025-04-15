@@ -10,6 +10,7 @@ enum SessionMessage {
     Healthy(oneshot::Sender<bool>),
     Stdout(oneshot::Sender<Vec<String>>),
     Stderr(oneshot::Sender<Vec<String>>),
+    UpdateDetails{ target: String, env: String, host_port: usize, dest_port: usize}
 }
 
 enum SessionStatus {
@@ -49,24 +50,26 @@ impl SessionActor {
         }
     }
 
+    fn terminate(&mut self) {
+        match std::mem::replace(&mut self.status, SessionStatus::Fresh) {
+            SessionStatus::Running(mut child, _, _) => {
+                tokio::spawn(async move {
+                    if let Err(e) = child.kill().await {
+                        // TODO: HAndle?
+                        //eprintln!("Failed to kill child process: {}", e);
+                    }
+                });
+
+                // TODO: Probably use the proper stopped state.
+                self.status = SessionStatus::Fresh;
+            }
+            other_state => self.status = other_state,
+        }
+    }
+
     fn handle_message(&mut self, msg: SessionMessage) {
         match msg {
-            SessionMessage::Stop => {
-                match std::mem::replace(&mut self.status, SessionStatus::Fresh) {
-                    SessionStatus::Running(mut child, _, _) => {
-                        tokio::spawn(async move {
-                            if let Err(e) = child.kill().await {
-                                // TODO: HAndle?
-                                //eprintln!("Failed to kill child process: {}", e);
-                            }
-                        });
-
-                        // TODO: Probably use the proper stopped state.
-                        self.status = SessionStatus::Fresh;
-                    }
-                    other_state => self.status = other_state,
-                }
-            }
+            SessionMessage::Stop => self.terminate(),
             SessionMessage::Start => {
                 let mut command = Command::new("aws");
                 command.args([
@@ -109,6 +112,13 @@ impl SessionActor {
             }
             SessionMessage::Stderr(reply) => {
                 reply.send(self.stderr.clone()).unwrap();
+            },
+            SessionMessage::UpdateDetails { target, env, host_port, dest_port } => {
+                self.terminate();
+                self.target = target;
+                self.env = env;
+                self.host_port = host_port;
+                self.dest_port = dest_port;
             }
         }
     }
@@ -211,5 +221,10 @@ impl Session {
         let msg = SessionMessage::Stderr(send);
         let _ = self.sender.send(msg).await;
         recv.await.expect("Actor killed?")
+    }
+
+    pub async fn update(&self, target: String, env: String, host_port: usize, dest_port: usize) {
+        let msg = SessionMessage::UpdateDetails{target, env, host_port, dest_port};
+        self.sender.send(msg).await.expect("Actor ded?");
     }
 }

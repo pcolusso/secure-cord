@@ -1,4 +1,4 @@
-use std::{borrow::Cow, future::Future, time::Duration};
+use std::{borrow::Cow, future::Future, path::PathBuf, time::Duration};
 
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyEvent, KeyEventKind, KeyCode};
@@ -13,9 +13,9 @@ use ratatui::{
 
 use crate::{servers::Server, ssm::Session, Uhh};
 
-pub async fn run(server_list: Vec<Uhh>) -> Result<()> {
+pub async fn run(server_list: Vec<Uhh>, connections_file: PathBuf) -> Result<()> {
     let terminal = ratatui::init();
-    App::new(server_list).run(terminal).await?;
+    App::new(server_list, connections_file).run(terminal).await?;
     ratatui::restore();
 
     Ok(())
@@ -30,56 +30,131 @@ struct EditView {
     selected: usize,
     stdout: Vec<String>,
     scroll: usize,
-    last_update: std::time::Instant,
     session: Session,
+    server: Server,
+    form_fields: Vec<String>,
+    active_field: usize,
 }
 
 impl EditView {
-    fn new(selected: usize, session: Session) -> Self {
+    fn new(selected: usize, session: Session, server: Server) -> Self {
+        let form_fields = vec![
+            server.identifier.clone(),
+            server.name.clone(),
+            server.env.clone(),
+            server.host_port.to_string(),
+            server.dest_port.to_string(),
+        ];
         Self {
             selected,
             stdout: Vec::new(),
             scroll: 0,
-            last_update: std::time::Instant::now(),
             session,
+            server,
+            form_fields,
+            active_field: 0,
         }
     }
 
-    async fn update_stdout(&mut self) {
-        if self.last_update.elapsed() > std::time::Duration::from_secs(1) {
-            self.stdout = self.session.stdout().await;
-            self.last_update = std::time::Instant::now();
-        }
+    async fn update(&mut self) {
+        self.stdout = self.session.stdout().await;
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
+            KeyCode::Up => {
+                self.active_field = self.active_field.saturating_sub(1);
+                true
+            }
+            KeyCode::Down => {
+                self.active_field = (self.active_field + 1).min(self.form_fields.len() - 1);
+                true
+            }
+            KeyCode::Left => {
+                if let Some(field) = self.form_fields.get_mut(self.active_field) {
+                    if !field.is_empty() {
+                        field.pop();
+                    }
+                }
+                true
+            }
+            KeyCode::Char(c) => {
+                if let Some(field) = self.form_fields.get_mut(self.active_field) {
+                    field.push(c);
+                }
+                true
+            }
+            KeyCode::Backspace => {
+                if let Some(field) = self.form_fields.get_mut(self.active_field) {
+                    let _ = field.pop();
+                }
+                true
+            }
             _ => false,
         }
     }
 
     fn draw(&mut self, f: &mut Frame, area: Rect) {
-        let block = Block::default()
-            .title("Editing")
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Fill(1), Constraint::Fill(1)])
+            .split(area);
+
+        let form_block = Block::default()
+            .title("Edit Server")
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded);
-        f.render_widget(block, area);
+        f.render_widget(form_block, chunks[0]);
+
+        let form_fields = vec![
+            ("Instance ID", &self.form_fields[0]),
+            ("Name", &self.form_fields[1]),
+            ("Environment", &self.form_fields[2]),
+            ("Source Port", &self.form_fields[3]),
+            ("Destination Port", &self.form_fields[4]),
+        ];
+
+        let form_items: Vec<Paragraph> = form_fields.iter().enumerate().map(|(i, (label, value))| {
+            let style = if i == self.active_field {
+                Style::default().bg(Color::DarkGray)
+            } else {
+                Style::default()
+            };
+            Paragraph::new(format!("{}: {}", label, value))
+                .style(style)
+                .block(Block::bordered())
+        }).collect();
+
+        let form_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![Constraint::Length(4); form_items.len()])
+            .split(chunks[0].inner(Margin::new(1, 1)));
+
+        for (i, item) in form_items.into_iter().enumerate() {
+            f.render_widget(item, form_layout[i]);
+        }
+
+        // Output block
+        let output_block = Block::default()
+            .title("SSM Output")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded);
+        f.render_widget(output_block, chunks[1]);
 
         // Limit scroll to reasonable bounds
         self.scroll = self.scroll.min(self.stdout.len().saturating_sub(1));
 
-        let visible_lines = area.height.saturating_sub(2) as usize;
+        let visible_lines = chunks[1].height.saturating_sub(2) as usize;
         let start_idx = self.stdout.len().saturating_sub(self.scroll + visible_lines);
         let end_idx = start_idx + visible_lines;
         let visible_text = self.stdout[start_idx..end_idx.min(self.stdout.len())].join("\n");
 
         let stdout_para = Paragraph::new(visible_text)
             .block(Block::default().title(format!(
-                "SSM Output ({} lines)",
+                "{} lines",
                 self.stdout.len()
-            )).borders(Borders::ALL)
-            .border_type(BorderType::Rounded));
-        f.render_widget(stdout_para, area.inner(Margin::new(1, 1)));
+            )));
+        f.render_widget(stdout_para, chunks[1].inner(Margin::new(1, 1)));
     }
 }
 
@@ -95,18 +170,20 @@ pub struct App {
     table_state: TableState,
     running: bool,
     editing: Option<Server>,
-    event_stream: EventStream
+    event_stream: EventStream,
+    connections_file: PathBuf,
 }
 
 impl App {
-    fn new(server_list: Vec<Uhh>) -> Self {
+    fn new(server_list: Vec<Uhh>, connections_file: PathBuf) -> Self {
         let mut res = App {
             mode: Mode::Main,
             server_list,
             table_state: TableState::default(),
             event_stream: EventStream::default(),
             running: false,
-            editing: None
+            editing: None,
+            connections_file
         };
         res.table_state.select_first();
 
@@ -123,8 +200,6 @@ impl App {
     }
 
     fn draw(&mut self, f: &mut Frame) {
-        // TODO: Make a funnk Cunk pun for this typo.
-        // I'm limited by the creativity of my time.
         let cunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Fill(1), Constraint::Length(1)].as_ref())
@@ -202,7 +277,7 @@ impl App {
             }
             _ = interval.tick() => {
                 if let Mode::Edit(edit_view) = &mut self.mode {
-                    edit_view.update_stdout().await;
+                    edit_view.update().await;
                 }
                 self.poll_sessions().await;
             }
@@ -218,9 +293,9 @@ impl App {
                 KeyCode::Down | KeyCode::Char('j') => self.table_state.select_next(),
                 KeyCode::Char('e') => {
                     if let Some(sel) = self.table_state.selected() {
-                        let (session, _, _) = &self.server_list[sel];
-                        let mut edit_view = EditView::new(sel, session.clone());
-                        edit_view.update_stdout().await;
+                        let (session, server, _) = &self.server_list[sel];
+                        let mut edit_view = EditView::new(sel, session.clone(), server.clone());
+                        edit_view.update().await;
                         self.mode = Mode::Edit(edit_view);
                     }
                 },
@@ -237,12 +312,41 @@ impl App {
                         });
                     }
                 }
+                KeyCode::Char('s') => {
+                    let servers: Vec<_> = self.server_list.iter().map(|(_, server, _)| server.clone()).collect();
+                    let path = self.connections_file.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = crate::servers::save(path, &servers).await {
+                            eprintln!("Failed to save servers: {}", e);
+                        }
+                    });
+                }
                 _ => {}
             },
             Mode::Edit(edit_view) => {
                 if !edit_view.handle_key(key) {
                     match key.code {
-                        KeyCode::Enter | KeyCode::Esc => {
+                        KeyCode::Enter => {
+                            if let Mode::Edit(edit_view) = std::mem::replace(&mut self.mode, Mode::Main) {
+                                let (session, server, _) = &mut self.server_list[edit_view.selected];
+                                // Update the server with form field values
+                                server.identifier = edit_view.form_fields[0].clone();
+                                server.name = edit_view.form_fields[1].clone();
+                                server.env = edit_view.form_fields[2].clone();
+                                server.host_port = edit_view.form_fields[3].parse().unwrap_or(server.host_port);
+                                server.dest_port = edit_view.form_fields[4].parse().unwrap_or(server.dest_port);
+
+                                let session = session.clone();
+                                let identifer = server.identifier.clone();
+                                let env = server.env.clone();
+                                let host_port = server.host_port;
+                                let dest_port = server.dest_port;
+                                tokio::spawn(async move {
+                                    session.update(identifer, env, host_port, dest_port).await;
+                                });
+                            }
+                        }
+                        KeyCode::Esc => {
                             self.mode = Mode::Main;
                         }
                         _ => {}
