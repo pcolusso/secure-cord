@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
         })
         .collect();
 
-    ui::run(mapped, connections_file).await?;
+    ui::run().await?;
 
     Ok(())
 }
