@@ -1,6 +1,6 @@
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use anyhow::Result;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Server {
@@ -14,14 +14,14 @@ pub struct Server {
     pub dest_port: usize,
 }
 
-pub async fn load(path: impl AsRef<Path>) -> Result<Vec<Server>> {
-    let data = tokio::fs::read_to_string(path).await?;
+pub fn load(path: impl AsRef<Path>) -> Result<Vec<Server>> {
+    let data = std::fs::read_to_string(path)?;
     let entries: Vec<Server> = serde_json::from_str(&data)?;
     Ok(entries)
 }
 
-pub async fn save(path: impl AsRef<Path>, servers: &[Server]) -> Result<()> {
+pub fn save(path: impl AsRef<Path>, servers: &[Server]) -> Result<()> {
     let json = serde_json::to_string_pretty(servers)?;
-    tokio::fs::write(path, json).await?;
+    std::fs::write(path, json)?;
     Ok(())
 }

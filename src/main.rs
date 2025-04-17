@@ -29,24 +29,8 @@ async fn main() -> Result<()> {
         Some(f) => f,
     };
 
-    let servers = servers::load(&connections_file).await?;
-    let mapped: Vec<Uhh> = servers
-        .into_iter()
-        .map(|s| {
-            (
-                Session::new(
-                    s.identifier.clone(),
-                    s.env.clone(),
-                    s.host_port,
-                    s.dest_port,
-                ),
-                s,
-                false,
-            )
-        })
-        .collect();
-
-    ui::run().await?;
+    let servers = servers::load(&connections_file)?;
+    ui::run(servers)?;
 
     Ok(())
 }
