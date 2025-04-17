@@ -1,11 +1,40 @@
 use anyhow::Result;
 use eframe::egui;
-use std::sync::{mpsc, Arc, Mutex};
+use std::cmp::Ordering;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
-use crate::Server;
+use crate::{servers, Server};
 
-pub fn run(servers: Vec<Server>) -> Result<()> {
-    let app = App::new(servers);
+trait SortableCompare {
+    fn compare<T: Ord>(&self, a: &T, b: &T) -> Ordering;
+}
+
+impl SortableCompare for SortDirection {
+    fn compare<T: Ord>(&self, a: &T, b: &T) -> Ordering {
+        match self {
+            SortDirection::Ascending => a.cmp(b),
+            SortDirection::Descending => b.cmp(a),
+        }
+    }
+}
+
+pub fn run(servers: Vec<Server>, save_path: Option<PathBuf>) -> Result<()> {
+    let app = App::new(servers, save_path);
+
+    // Embed custom font
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "berkeley_mono".to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../BerkeleyMonoVariable-Regular.ttf"
+        ))),
+    );
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "berkeley_mono".to_owned());
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -17,25 +46,59 @@ pub fn run(servers: Vec<Server>) -> Result<()> {
     eframe::run_native(
         "secure-cords",
         native_options,
-        Box::new(|cc| Ok(Box::new(app))),
+        Box::new(|_cc| Ok(Box::new(app))),
     )
     .expect("idk you should probably spawn a runtime and ensure UI is on the main thread, bub.");
 
     Ok(())
 }
 
-struct State {
-    servers: Vec<Server>,
+#[derive(PartialEq)]
+enum SortDirection {
+    Ascending,
+    Descending,
 }
 
+struct SortState {
+    column: usize,
+    direction: SortDirection,
+}
+
+impl Default for SortState {
+    fn default() -> Self {
+        Self {
+            column: 0,
+            direction: SortDirection::Ascending,
+        }
+    }
+}
+
+// State that can be modified by other threads
+struct State {
+    servers: Vec<Server>,
+    save_path: PathBuf,
+}
+
+// UI specific state
 struct App {
     state: Arc<Mutex<State>>,
+    sort: SortState,
+    selected_row: Option<usize>,
 }
 
 impl App {
-    fn new(servers: Vec<Server>) -> Self {
-        let state = Arc::new(Mutex::new(State { servers }));
-        Self { state }
+    fn new(servers: Vec<Server>, save_path: Option<PathBuf>) -> Self {
+        let save_path = save_path.unwrap_or_else(|| {
+            home::home_dir()
+                .expect("Can't get home dir.")
+                .join("Documents/jobs.json")
+        });
+        let state = Arc::new(Mutex::new(State { servers, save_path }));
+        Self {
+            state,
+            sort: SortState::default(),
+            selected_row: None,
+        }
     }
 }
 
@@ -43,33 +106,136 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, f: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             // The central panel the region left after adding TopPanel's and SidePanel's
-            ui.heading("eframe template");
+            ui.heading("Secure Cords");
+            ui.style_mut().text_styles.insert(
+                egui::TextStyle::Heading,
+                egui::FontId::new(24.0, egui::FontFamily::Proportional),
+            );
 
             ui.separator();
 
-            ui.add(egui::github_link_file!(
-                "https://github.com/emilk/eframe_template/blob/main/",
-                "Source code."
-            ));
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::Grid::new("servers_grid")
+                    .striped(true)
+                    .min_col_width(100.0)
+                    .show(ui, |ui| {
+                        // Header row with clickable headers
+                        let mut state = self.state.lock().unwrap();
 
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                powered_by_egui_and_eframe(ui);
-                egui::warn_if_debug_build(ui);
+                        let headers = [
+                            "Name",
+                            "Identifier",
+                            "Environment",
+                            "Host Port",
+                            "Dest Port",
+                            "Status",
+                        ];
+                        for (col_idx, header) in headers.iter().enumerate() {
+                            let response = ui.selectable_label(
+                                self.sort.column == col_idx,
+                                if self.sort.column == col_idx {
+                                    match self.sort.direction {
+                                        SortDirection::Ascending => format!("{} 👆", header),
+                                        SortDirection::Descending => format!("{} 👇", header),
+                                    }
+                                } else {
+                                    header.to_string()
+                                },
+                            );
+
+                            if response.clicked() {
+                                if self.sort.column == col_idx {
+                                    self.sort.direction = match self.sort.direction {
+                                        SortDirection::Ascending => SortDirection::Descending,
+                                        SortDirection::Descending => SortDirection::Ascending,
+                                    };
+                                } else {
+                                    self.sort.column = col_idx;
+                                    self.sort.direction = SortDirection::Ascending;
+                                }
+
+                                match col_idx {
+                                    0 => state.servers.sort_by(|a, b| {
+                                        self.sort.direction.compare(&a.name, &b.name)
+                                    }),
+                                    1 => state.servers.sort_by(|a, b| {
+                                        self.sort.direction.compare(&a.identifier, &b.identifier)
+                                    }),
+                                    2 => state.servers.sort_by(|a, b| {
+                                        self.sort.direction.compare(&a.env, &b.env)
+                                    }),
+                                    3 => state.servers.sort_by(|a, b| {
+                                        self.sort.direction.compare(&a.host_port, &b.host_port)
+                                    }),
+                                    4 => state.servers.sort_by(|a, b| {
+                                        self.sort.direction.compare(&a.dest_port, &b.dest_port)
+                                    }),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        ui.end_row();
+
+                        // Data rows
+                        for (row_idx, server) in state.servers.iter().enumerate() {
+                            let is_selected = self.selected_row == Some(row_idx);
+                            if ui.selectable_label(is_selected, &server.name).clicked() {
+                                self.selected_row = Some(row_idx);
+                            }
+                            ui.label(&server.identifier);
+                            ui.label(&server.env);
+                            ui.label(server.host_port.to_string());
+                            ui.label(server.dest_port.to_string());
+                            ui.label("Not connected"); // Placeholder for status
+                            ui.end_row();
+                        }
+                    });
+            });
+
+            // Bottom panel with action buttons
+            egui::TopBottomPanel::bottom("toolbar").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("➕ Add").clicked() {
+                        let mut state = self.state.lock().unwrap();
+                        state.servers.push(Server {
+                            identifier: "new-instance".to_string(),
+                            env: "dev".to_string(),
+                            host_port: 8080,
+                            name: "New Server".to_string(),
+                            dest_port: 8080,
+                        });
+                    }
+
+                    let mut state = self.state.lock().unwrap();
+                    let is_row_selected = self.selected_row.is_some();
+
+                    if ui
+                        .add_enabled(is_row_selected, egui::Button::new("✏️ Modify"))
+                        .clicked()
+                    {
+                        if let Some(idx) = self.selected_row {
+                            // TODO: Open edit dialog for state.servers[idx]
+                        }
+                    }
+
+                    if ui
+                        .add_enabled(is_row_selected, egui::Button::new("🗑️ Delete"))
+                        .clicked()
+                    {
+                        if let Some(idx) = self.selected_row {
+                            state.servers.remove(idx);
+                            self.selected_row = None;
+                        }
+                    }
+
+                    if ui.button("💾 Save").clicked() {
+                        let state = self.state.lock().unwrap();
+                        if let Err(e) = servers::save(&state.save_path, &state.servers) {
+                            eprintln!("Failed to save: {}", e);
+                        }
+                    }
+                });
             });
         });
     }
-}
-
-fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.label("Powered by ");
-        ui.hyperlink_to("egui", "https://github.com/emilk/egui");
-        ui.label(" and ");
-        ui.hyperlink_to(
-            "eframe",
-            "https://github.com/emilk/egui/tree/master/crates/eframe",
-        );
-        ui.label(".");
-    });
 }

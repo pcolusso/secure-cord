@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
     };
 
     let servers = servers::load(&connections_file)?;
-    ui::run(servers)?;
+    ui::run(servers, Some(connections_file))?;
 
     Ok(())
 }
