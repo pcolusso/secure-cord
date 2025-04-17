@@ -1,6 +1,37 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::ops::{Deref, DerefMut};
+use std::path::{Path, PathBuf};
+
+pub struct ServerList {
+    servers: Vec<Server>,
+    path: PathBuf,
+}
+
+impl Deref for ServerList {
+    type Target = Vec<Server>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.servers
+    }
+}
+
+impl DerefMut for ServerList {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.servers
+    }
+}
+
+impl ServerList {
+    pub fn load(path: PathBuf) -> Result<Self> {
+        let servers = load(&path)?;
+        Ok(Self { servers, path })
+    }
+
+    fn save(&self) -> Result<()> {
+        save(&self.path, &self.servers)
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Server {

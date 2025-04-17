@@ -1,10 +1,9 @@
 use anyhow::Result;
 use eframe::egui;
 use std::cmp::Ordering;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use crate::{servers, Server};
+use crate::servers::{Server, ServerList};
 
 trait SortableCompare {
     fn compare<T: Ord>(&self, a: &T, b: &T) -> Ordering;
@@ -19,8 +18,8 @@ impl SortableCompare for SortDirection {
     }
 }
 
-pub fn run(servers: Vec<Server>, save_path: Option<PathBuf>) -> Result<()> {
-    let app = App::new(servers, save_path);
+pub fn run(servers: ServerList) -> Result<()> {
+    let app = App::new(servers);
 
     // Embed custom font
     let mut fonts = egui::FontDefinitions::default();
@@ -75,8 +74,7 @@ impl Default for SortState {
 
 // State that can be modified by other threads
 struct State {
-    servers: Vec<Server>,
-    save_path: PathBuf,
+    servers: ServerList,
 }
 
 // UI specific state
@@ -84,20 +82,17 @@ struct App {
     state: Arc<Mutex<State>>,
     sort: SortState,
     selected_row: Option<usize>,
+    edit_window_open: Option<usize>,
 }
 
 impl App {
-    fn new(servers: Vec<Server>, save_path: Option<PathBuf>) -> Self {
-        let save_path = save_path.unwrap_or_else(|| {
-            home::home_dir()
-                .expect("Can't get home dir.")
-                .join("Documents/jobs.json")
-        });
-        let state = Arc::new(Mutex::new(State { servers, save_path }));
+    fn new(servers: ServerList) -> Self {
+        let state = Arc::new(Mutex::new(State { servers }));
         Self {
             state,
             sort: SortState::default(),
             selected_row: None,
+            edit_window_open: None,
         }
     }
 }
@@ -105,15 +100,6 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, f: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            // The central panel the region left after adding TopPanel's and SidePanel's
-            ui.heading("Secure Cords");
-            ui.style_mut().text_styles.insert(
-                egui::TextStyle::Heading,
-                egui::FontId::new(24.0, egui::FontFamily::Proportional),
-            );
-
-            ui.separator();
-
             egui::ScrollArea::vertical().show(ui, |ui| {
                 egui::Grid::new("servers_grid")
                     .striped(true)
@@ -179,14 +165,19 @@ impl eframe::App for App {
                         // Data rows
                         for (row_idx, server) in state.servers.iter().enumerate() {
                             let is_selected = self.selected_row == Some(row_idx);
-                            if ui.selectable_label(is_selected, &server.name).clicked() {
+                            let name_response = ui.selectable_label(is_selected, &server.name);
+                            if name_response.clicked() {
                                 self.selected_row = Some(row_idx);
+                                if name_response.double_clicked() {
+                                    self.edit_window_open = Some(row_idx);
+                                }
                             }
                             ui.label(&server.identifier);
                             ui.label(&server.env);
                             ui.label(server.host_port.to_string());
                             ui.label(server.dest_port.to_string());
-                            ui.label("Not connected"); // Placeholder for status
+                            // TODO
+                            ui.label("Not connected");
                             ui.end_row();
                         }
                     });
@@ -230,12 +221,31 @@ impl eframe::App for App {
 
                     if ui.button("💾 Save").clicked() {
                         let state = self.state.lock().unwrap();
-                        if let Err(e) = servers::save(&state.save_path, &state.servers) {
+                        if let Err(e) = state.servers.save() {
                             eprintln!("Failed to save: {}", e);
                         }
                     }
                 });
             });
         });
+
+        // Render edit window if needed
+        if let Some(row_idx) = self.edit_window_open {
+            let state = self.state.lock().unwrap();
+            if let Some(server) = state.servers.get(row_idx) {
+                egui::Window::new("Edit Server")
+                    .open(&mut self.edit_window_open.is_some())
+                    .show(ctx, |ui| {
+                        ui.label(format!("Editing: {}", server.name));
+                        // TODO: Add actual edit controls here
+                        if ui.button("Close").clicked() {
+                            self.edit_window_open = None;
+                        }
+                    });
+            } else {
+                // Row was deleted while window was open
+                self.edit_window_open = None;
+            }
+        }
     }
 }
