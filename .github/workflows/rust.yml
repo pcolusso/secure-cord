@@ -1,0 +1,96 @@
+name: Rust
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: cargo build --verbose
+    - name: Run tests
+      run: cargo test --verbose
+
+  build-windows:
+    runs-on: windows-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        targets: x86_64-pc-windows-msvc
+    
+    - name: Build release binary
+      run: cargo build --release --target x86_64-pc-windows-msvc
+    
+    - name: Create artifacts directory
+      run: mkdir artifacts
+    
+    - name: Copy binary to artifacts
+      run: |
+        $binaryName = (Get-Content Cargo.toml | Select-String 'name = "(.+)"' | ForEach-Object { $_.Matches[0].Groups[1].Value })
+        Copy-Item "target/x86_64-pc-windows-msvc/release/$binaryName.exe" "artifacts/$binaryName-windows-x64.exe"
+      shell: powershell
+    
+    - name: Upload Windows binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-binary
+        path: artifacts/
+        retention-days: 30
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [test, build-windows]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Download Windows binary
+      uses: actions/download-artifact@v4
+      with:
+        name: windows-binary
+        path: ./release-artifacts
+    
+    - name: Get version from Cargo.toml
+      id: version
+      run: |
+        VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+    
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ steps.version.outputs.version }}-${{ github.run_number }}
+        release_name: Release v${{ steps.version.outputs.version }}-${{ github.run_number }}
+        draft: false
+        prerelease: false
+        body: |
+          Automated release from commit ${{ github.sha }}
+          
+          ## Download
+          - Windows x64: Download the `.exe` file below
+    
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./release-artifacts/*.exe
+        asset_name: ${{ github.event.repository.name }}-windows-x64.exe
+        asset_content_type: application/octet-stream
